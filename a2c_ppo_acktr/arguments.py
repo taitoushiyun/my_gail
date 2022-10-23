@@ -149,6 +149,11 @@ def get_args():
         action='store_true',
         default=False,
         help='use a linear schedule on the learning rate')
+    parser.add_argument('--gail_reward', default='both', type=str)
+    parser.add_argument('--gail_loss', default='extra_loss', type=str)
+    parser.add_argument('--cuda_index', default='0', type=str)
+    parser.add_argument('--vis_name', default='main', type=str)
+    parser.add_argument('--num_expert_data', default=4, type=int)
     args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()

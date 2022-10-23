@@ -54,7 +54,7 @@ class Discriminator(nn.Module):
         grad_pen = lambda_ * (grad.norm(2, dim=1) - 1).pow(2).mean()
         return grad_pen
 
-    def update(self, expert_loader, rollouts, obsfilt=None):
+    def update(self, expert_loader, rollouts, obsfilt=None, extra_loss='extra_loss'):
         self.train()
 
         policy_data_generator = rollouts.feed_forward_generator(
@@ -85,21 +85,31 @@ class Discriminator(nn.Module):
             gail_loss = expert_loss + policy_loss
             grad_pen = self.compute_grad_pen(expert_state, expert_action,
                                              policy_state, policy_action)
-
-            loss += (gail_loss + grad_pen).item()
+            if extra_loss == 'extra_loss':
+                loss += (gail_loss + grad_pen).item()
+            else:
+                loss = gail_loss.item()
             n += 1
 
             self.optimizer.zero_grad()
-            (gail_loss + grad_pen).backward()
+            if extra_loss == 'extra_loss':
+                (gail_loss + grad_pen).backward()
+            else:
+                gail_loss.backward()
             self.optimizer.step()
         return loss / n
 
-    def predict_reward(self, state, action, gamma, masks, update_rms=True):
+    def predict_reward(self, state, action, gamma, masks, update_rms=True, reward='both'):
         with torch.no_grad():
             self.eval()
             d = self.trunk(torch.cat([state, action], dim=1))
             s = torch.sigmoid(d)
-            reward = s.log() - (1 - s).log()
+            if reward == 'both':
+                reward = s.log() - (1 - s).log()
+            elif reward == 'first':
+                reward = s.log()
+            elif reward == 'second':
+                reward = - (1 - s).log()
             if self.returns is None:
                 self.returns = reward.clone()
 

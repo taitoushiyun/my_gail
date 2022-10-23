@@ -18,6 +18,7 @@ from a2c_ppo_acktr.envs import make_vec_envs
 from a2c_ppo_acktr.model import Policy
 from a2c_ppo_acktr.storage import RolloutStorage
 from evaluation import evaluate
+import visdom
 
 
 def main():
@@ -36,7 +37,7 @@ def main():
     utils.cleanup_log_dir(eval_log_dir)
 
     torch.set_num_threads(1)
-    device = torch.device("cuda:0" if args.cuda else "cpu")
+    device = torch.device("cuda:{}".format(args.cuda_index) if args.cuda else "cpu")
 
     envs = make_vec_envs(args.env_name, args.seed, args.num_processes,
                          args.gamma, args.log_dir, device, False)
@@ -46,6 +47,8 @@ def main():
         envs.action_space,
         base_kwargs={'recurrent': args.recurrent_policy})
     actor_critic.to(device)
+    # actor_critic.load_state_dict(torch.load('trained_models/ppo/HalfCheetah-v2.pt')[0].state_dict())
+    # utils.get_vec_normalize(envs).obs_rms = torch.load('trained_models/ppo/HalfCheetah-v2.pt')[1]
 
     if args.algo == 'a2c':
         agent = algo.A2C_ACKTR(
@@ -79,9 +82,9 @@ def main():
         file_name = os.path.join(
             args.gail_experts_dir, "trajs_{}.pt".format(
                 args.env_name.split('-')[0].lower()))
-        
+
         expert_dataset = gail.ExpertDataset(
-            file_name, num_trajectories=4, subsample_frequency=20)
+            file_name, num_trajectories=args.num_expert_data, subsample_frequency=20)
         drop_last = len(expert_dataset) > args.gail_batch_size
         gail_train_loader = torch.utils.data.DataLoader(
             dataset=expert_dataset,
@@ -102,6 +105,51 @@ def main():
     start = time.time()
     num_updates = int(
         args.num_env_steps) // args.num_steps // args.num_processes
+    # # print('+++++++++++++++++++++++++++++++++++++')
+    # # env = gym.make("HalfCheetah-v2")
+    # # obs = torch.from_numpy(np.array(env.reset())).unsqueeze(0).type(torch.float32)
+    # # print(obs.shape)
+    # # print('-----------------------------------')
+    # # done= False
+    # # reward_total = 0
+    # # for i in range(2048):
+    # #     with torch.no_grad():
+    # #         value, action, action_log_prob, recurrent_hidden_states = actor_critic.act(
+    # #             obs, None, None)
+    # #         env.render()
+    # #         action=np.array(action.squeeze())
+    # #         print(action)
+    # #         obs, reward, done, infos = env.step(action)
+    # #         reward_total += reward
+    # #         obs = torch.from_numpy(np.array(obs)).unsqueeze(0).type(torch.float32)
+    # # print(reward_total)
+    #
+    # # print('+++++++++++++++++++++++++++++++++++++')
+    # # # obs = torch.from_numpy(np.array(env.reset())).unsqueeze(0).type(torch.float32)
+    # # print(obs.shape)
+    # # print('-----------------------------------')
+    # # done = False
+    # # reward_total = 0
+    # # for j in range(5):
+    # #     for i in range(2048):
+    # #         with torch.no_grad():
+    # #             value, action, action_log_prob, recurrent_hidden_states = actor_critic.act(
+    # #                 obs, None, None)
+    # #
+    # #         obs, reward, done, infos = envs.step(action)
+    # #         # print('-----------------------------------')
+    # #         for info in infos:
+    # #             if 'episode' in info.keys():
+    # #                 episode_rewards.append(info['episode']['r'])
+    # #
+    # #     print(len(episode_rewards))
+    # #     print(np.mean(episode_rewards))
+    # obs_rms = utils.get_vec_normalize(envs).obs_rms
+    # evaluate(actor_critic, obs_rms, args.env_name, args.seed,
+    #          args.num_processes, eval_log_dir, device)
+
+    # return
+    vis = visdom.Visdom(env=args.vis_name)
     for j in range(num_updates):
 
         if args.use_linear_lr_decay:
@@ -147,12 +195,12 @@ def main():
                 gail_epoch = 100  # Warm up
             for _ in range(gail_epoch):
                 discr.update(gail_train_loader, rollouts,
-                             utils.get_vec_normalize(envs)._obfilt)
+                             utils.get_vec_normalize(envs)._obfilt, extra_loss=args.gail_loss)
 
             for step in range(args.num_steps):
                 rollouts.rewards[step] = discr.predict_reward(
                     rollouts.obs[step], rollouts.actions[step], args.gamma,
-                    rollouts.masks[step])
+                    rollouts.masks[step], reward=args.gail_reward)
 
         rollouts.compute_returns(next_value, args.use_gae, args.gamma,
                                  args.gae_lambda, args.use_proper_time_limits)
@@ -178,14 +226,17 @@ def main():
         if j % args.log_interval == 0 and len(episode_rewards) > 1:
             total_num_steps = (j + 1) * args.num_processes * args.num_steps
             end = time.time()
-            print(
-                "Updates {}, num timesteps {}, FPS {} \n Last {} training episodes: mean/median reward {:.1f}/{:.1f}, min/max reward {:.1f}/{:.1f}\n"
-                .format(j, total_num_steps,
-                        int(total_num_steps / (end - start)),
-                        len(episode_rewards), np.mean(episode_rewards),
-                        np.median(episode_rewards), np.min(episode_rewards),
-                        np.max(episode_rewards), dist_entropy, value_loss,
-                        action_loss))
+            vis.line(X=[total_num_steps], Y=[np.mean(episode_rewards).item()], win='test1', name='test_1_name', update='append', opts={'xlabel': 'steps', 'ylabel': 'episode reward'})
+            # print(
+            #     "Updates {}, num timesteps {}, FPS {} \n Last {} training episodes: mean/median reward {:.1f}/{:.1f}, min/max reward {:.1f}/{:.1f}\n"
+            #     .format(j, total_num_steps,
+            #             int(total_num_steps / (end - start)),
+            #             len(episode_rewards), np.mean(episode_rewards),
+            #             np.median(episode_rewards), np.min(episode_rewards),
+            #             np.max(episode_rewards), dist_entropy, value_loss,
+            #             action_loss))
+
+
 
         if (args.eval_interval is not None and len(episode_rewards) > 1
                 and j % args.eval_interval == 0):

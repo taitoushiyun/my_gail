@@ -3,7 +3,7 @@ import torch
 
 from a2c_ppo_acktr import utils
 from a2c_ppo_acktr.envs import make_vec_envs
-
+import time
 
 def evaluate(actor_critic, obs_rms, env_name, seed, num_processes, eval_log_dir,
              device):
@@ -31,6 +31,8 @@ def evaluate(actor_critic, obs_rms, env_name, seed, num_processes, eval_log_dir,
                 deterministic=True)
 
         # Obser reward and next obs
+        # eval_envs.envs[0].render()
+        # time.sleep(0.1)
         obs, _, done, infos = eval_envs.step(action)
 
         eval_masks = torch.tensor(
