@@ -149,7 +149,7 @@ def main():
     #          args.num_processes, eval_log_dir, device)
 
     # return
-    vis = visdom.Visdom(env=args.vis_name)
+    vis = visdom.Visdom(env=args.vis_name, port=6029)
     for j in range(num_updates):
 
         if args.use_linear_lr_decay:
@@ -186,26 +186,61 @@ def main():
                 rollouts.obs[-1], rollouts.recurrent_hidden_states[-1],
                 rollouts.masks[-1]).detach()
 
-        if args.gail:
-            if j >= 10:
-                envs.venv.eval()
+        total_num_steps = (j + 1) * args.num_processes * args.num_steps
+        # if args.gail:
+        if j >= 10:
+            envs.venv.eval()
 
-            gail_epoch = args.gail_epoch
-            if j < 10:
-                gail_epoch = 100  # Warm up
-            for _ in range(gail_epoch):
-                discr.update(gail_train_loader, rollouts,
-                             utils.get_vec_normalize(envs)._obfilt, extra_loss=args.gail_loss)
+        gail_epoch = args.gail_epoch
+        if j < 10:
+            gail_epoch = args.warm_start_epoch  # Warm up
 
-            for step in range(args.num_steps):
-                rollouts.rewards[step] = discr.predict_reward(
-                    rollouts.obs[step], rollouts.actions[step], args.gamma,
-                    rollouts.masks[step], reward=args.gail_reward)
+        origin_reward = torch.zeros(args.num_steps, args.num_processes, 1)
+        for step in range(args.num_steps):
+            rollouts.rewards[step], origin_reward[step] = discr.predict_reward(
+                rollouts.obs[step], rollouts.actions[step], args.gamma,
+                rollouts.masks[step], update_rms=args.no_rms, reward=args.gail_reward)
+
+            # for _ in range(gail_epoch):
+            #     loss, gail_loss, grad_pen_loss, expert_loss, policy_loss, expert_acc, policy_acc = discr.update(gail_train_loader, rollouts,
+            #                  utils.get_vec_normalize(envs)._obfilt, extra_loss=args.gail_loss)
+
+
 
         rollouts.compute_returns(next_value, args.use_gae, args.gamma,
                                  args.gae_lambda, args.use_proper_time_limits)
 
-        value_loss, action_loss, dist_entropy = agent.update(rollouts)
+        # value_loss, action_loss, dist_entropy = agent.update(rollouts)
+        for i in range(args.ppo_epoch):
+            loss, gail_loss, grad_pen_loss, expert_loss, policy_loss, expert_acc, policy_acc, value_loss, action_loss, dist_entropy = update(discr, agent, gail_train_loader, rollouts, utils.get_vec_normalize(envs)._obfilt, extra_loss=args.gail_loss)
+        vis.line(X=[total_num_steps], Y=[loss], win='loss', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'loss'})
+        vis.line(X=[total_num_steps], Y=[gail_loss], win='gail_loss', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'gail_loss'})
+        vis.line(X=[total_num_steps], Y=[grad_pen_loss], win='grad_pen_loss', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'grad_pen_loss'})
+        vis.line(X=[total_num_steps], Y=[expert_loss], win='expert_loss', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'expert_loss'})
+        vis.line(X=[total_num_steps], Y=[policy_loss], win='policy_loss', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'policy_loss'})
+        vis.line(X=[total_num_steps], Y=[expert_acc], win='expert_acc', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'expert_acc'})
+        vis.line(X=[total_num_steps], Y=[policy_acc], win='policy_acc', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'policy_acc'})
+
+        mean_reward = rollouts.rewards.mean().item()
+        mean_origin_reward = origin_reward.mean().item()
+        vis.line(X=[total_num_steps], Y=[mean_reward], win='mean_reward', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'mean_reward'})
+        vis.line(X=[total_num_steps], Y=[mean_origin_reward], win='mean_origin_reward', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'mean_origin_reward'})
+
+        vis.line(X=[total_num_steps], Y=[value_loss], win='value_loss', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'value_loss'})
+        vis.line(X=[total_num_steps], Y=[action_loss], win='action_loss', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'action_loss'})
+        vis.line(X=[total_num_steps], Y=[dist_entropy], win='dist_entropy', update='append',
+                 opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'dist_entropy'})
 
         rollouts.after_update()
 
@@ -226,7 +261,7 @@ def main():
         if j % args.log_interval == 0 and len(episode_rewards) > 1:
             total_num_steps = (j + 1) * args.num_processes * args.num_steps
             end = time.time()
-            vis.line(X=[total_num_steps], Y=[np.mean(episode_rewards).item()], win='test1', name='test_1_name', update='append', opts={'xlabel': 'steps', 'ylabel': 'episode reward'})
+            vis.line(X=[total_num_steps], Y=[np.mean(episode_rewards).item()], win='episode reward',  update='append', opts={'xlabel': 'steps', 'ylabel': 'episode reward', 'title': 'episode reward'})
             # print(
             #     "Updates {}, num timesteps {}, FPS {} \n Last {} training episodes: mean/median reward {:.1f}/{:.1f}, min/max reward {:.1f}/{:.1f}\n"
             #     .format(j, total_num_steps,
@@ -244,6 +279,131 @@ def main():
             evaluate(actor_critic, obs_rms, args.env_name, args.seed,
                      args.num_processes, eval_log_dir, device)
 
+def update(discr, agent, expert_loader, rollouts, obsfilt, extra_loss):
+    discr.train()
+
+    loss = 0
+    gail_loss_value = 0
+    grad_pen_value = 0
+    expert_loss_value = 0
+    policy_loss_value = 0
+    expert_acc_value = 0
+    policy_acc_value = 0
+
+    advantages = rollouts.returns[:-1] - rollouts.value_preds[:-1]
+    advantages = (advantages - advantages.mean()) / (
+            advantages.std() + 1e-5)
+
+    value_loss_epoch = 0
+    action_loss_epoch = 0
+    dist_entropy_epoch = 0
+    policy_data_generator = rollouts.feed_forward_generator(
+        advantages, mini_batch_size=expert_loader.batch_size)
+
+    n = 0
+    for expert_batch, policy_batch in zip(expert_loader,
+                                          policy_data_generator):
+        obs_batch, recurrent_hidden_states_batch, actions_batch, \
+        value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \
+        adv_targ = policy_batch
+
+        # Reshape to do in a single forward pass for all steps
+        values, action_log_probs, dist_entropy, _ = agent.actor_critic.evaluate_actions(
+            obs_batch, recurrent_hidden_states_batch, masks_batch,
+            actions_batch)
+
+        ratio = torch.exp(action_log_probs -
+                          old_action_log_probs_batch)
+        surr1 = ratio * adv_targ
+        surr2 = torch.clamp(ratio, 1.0 - agent.clip_param,
+                            1.0 + agent.clip_param) * adv_targ
+        action_loss = -torch.min(surr1, surr2).mean()
+
+        if agent.use_clipped_value_loss:
+            value_pred_clipped = value_preds_batch + \
+                                 (values - value_preds_batch).clamp(-agent.clip_param, agent.clip_param)
+            value_losses = (values - return_batch).pow(2)
+            value_losses_clipped = (
+                    value_pred_clipped - return_batch).pow(2)
+            value_loss = 0.5 * torch.max(value_losses,
+                                         value_losses_clipped).mean()
+        else:
+            value_loss = 0.5 * (return_batch - values).pow(2).mean()
+
+
+        policy_state, policy_action = obs_batch, actions_batch
+        policy_d = discr.trunk(
+            torch.cat([policy_state, policy_action], dim=1))
+
+        expert_state, expert_action = expert_batch
+        expert_state = obsfilt(expert_state.numpy(), update=False)
+        expert_state = torch.FloatTensor(expert_state).to(discr.device)
+        expert_action = expert_action.to(discr.device)
+        expert_d = discr.trunk(
+            torch.cat([expert_state, expert_action], dim=1))
+
+        expert_loss = F.binary_cross_entropy_with_logits(
+            expert_d,
+            torch.ones(expert_d.size()).to(discr.device))
+        policy_loss = F.binary_cross_entropy_with_logits(
+            policy_d,
+            torch.zeros(policy_d.size()).to(discr.device))
+
+        gail_loss = expert_loss + policy_loss
+        grad_pen = discr.compute_grad_pen(expert_state, expert_action,
+                                         policy_state, policy_action)
+        zero = torch.zeros_like(policy_d)
+        one = torch.ones_like(policy_d)
+        expert_pred_prob = torch.sigmoid(expert_d)
+        policy_pred_prob = torch.sigmoid(policy_d)
+        expert_result = torch.where(expert_pred_prob > 0.5, one, zero)
+        policy_result = torch.where(policy_pred_prob < 0.5, zero, one)
+        expert_correct = (expert_result == one).sum().float()
+        policy_correct = (policy_result == zero).sum().float()
+        expert_acc = expert_correct / len(one)
+        policy_acc = policy_correct / len(zero)
+        expert_acc_value += expert_acc.item()
+        policy_acc_value += policy_acc.item()
+
+        if extra_loss == 'extra_loss':
+            loss += (gail_loss + grad_pen).item()
+            gail_loss_value += gail_loss.item()
+            grad_pen_value += grad_pen.item()
+            expert_loss_value += expert_loss.item()
+            policy_loss_value += policy_loss.item()
+
+        else:
+            loss = gail_loss.item()
+            gail_loss_value = 0
+            grad_pen_value = 0
+        n += 1
+
+        discr.optimizer.zero_grad()
+        agent.optimizer.zero_grad()
+        if extra_loss == 'extra_loss':
+            (gail_loss + grad_pen + value_loss * agent.value_loss_coef + action_loss -
+         dist_entropy * agent.entropy_coef).backward()
+        else:
+            (gail_loss + value_loss * agent.value_loss_coef + action_loss -
+         dist_entropy * agent.entropy_coef).backward()
+
+        nn.utils.clip_grad_norm_(agent.actor_critic.parameters(),
+                                 agent.max_grad_norm)
+
+        discr.optimizer.step()
+        agent.optimizer.step()
+
+        value_loss_epoch += value_loss.item()
+        action_loss_epoch += action_loss.item()
+        dist_entropy_epoch += dist_entropy.item()
+
+
+    value_loss_epoch /= n
+    action_loss_epoch /= n
+    dist_entropy_epoch /= n
+
+    return loss / n, gail_loss_value / n, grad_pen_value / n, expert_loss_value / n, policy_loss_value / n, expert_acc_value / n, policy_acc_value / n, \
+           value_loss_epoch, action_loss_epoch, dist_entropy_epoch
 
 if __name__ == "__main__":
     main()

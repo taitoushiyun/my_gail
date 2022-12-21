@@ -61,6 +61,13 @@ class Discriminator(nn.Module):
             None, mini_batch_size=expert_loader.batch_size)
 
         loss = 0
+        gail_loss_value = 0
+        grad_pen_value = 0
+        expert_loss_value = 0
+        policy_loss_value = 0
+        expert_acc_value = 0
+        policy_acc_value = 0
+
         n = 0
         for expert_batch, policy_batch in zip(expert_loader,
                                               policy_data_generator):
@@ -85,10 +92,30 @@ class Discriminator(nn.Module):
             gail_loss = expert_loss + policy_loss
             grad_pen = self.compute_grad_pen(expert_state, expert_action,
                                              policy_state, policy_action)
+            zero = torch.zeros_like(policy_d)
+            one = torch.ones_like(policy_d)
+            expert_pred_prob = torch.sigmoid(expert_d)
+            policy_pred_prob = torch.sigmoid(policy_d)
+            expert_result = torch.where(expert_pred_prob > 0.5, one, zero)
+            policy_result = torch.where(policy_pred_prob < 0.5, zero, one)
+            expert_correct = (expert_result == one).sum().float()
+            policy_correct = (policy_result == zero).sum().float()
+            expert_acc = expert_correct / len(one)
+            policy_acc = policy_correct / len(zero)
+            expert_acc_value += expert_acc.item()
+            policy_acc_value += policy_acc.item()
+
             if extra_loss == 'extra_loss':
                 loss += (gail_loss + grad_pen).item()
+                gail_loss_value += gail_loss.item()
+                grad_pen_value += grad_pen.item()
+                expert_loss_value += expert_loss.item()
+                policy_loss_value += policy_loss.item()
+
             else:
                 loss = gail_loss.item()
+                gail_loss_value = 0
+                grad_pen_value = 0
             n += 1
 
             self.optimizer.zero_grad()
@@ -97,7 +124,7 @@ class Discriminator(nn.Module):
             else:
                 gail_loss.backward()
             self.optimizer.step()
-        return loss / n
+        return loss / n, gail_loss_value / n, grad_pen_value / n, expert_loss_value / n, policy_loss_value / n, expert_acc_value / n, policy_acc_value / n
 
     def predict_reward(self, state, action, gamma, masks, update_rms=True, reward='both'):
         with torch.no_grad():
@@ -116,8 +143,9 @@ class Discriminator(nn.Module):
             if update_rms:
                 self.returns = self.returns * masks * gamma + reward
                 self.ret_rms.update(self.returns.cpu().numpy())
-
-            return reward / np.sqrt(self.ret_rms.var[0] + 1e-8)
+                return reward / np.sqrt(self.ret_rms.var[0] + 1e-8), reward
+            else:
+                return reward, reward
 
 
 class ExpertDataset(torch.utils.data.Dataset):

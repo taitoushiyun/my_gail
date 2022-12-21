@@ -153,7 +153,9 @@ def get_args():
     parser.add_argument('--gail_loss', default='extra_loss', type=str)
     parser.add_argument('--cuda_index', default='0', type=str)
     parser.add_argument('--vis_name', default='main', type=str)
+    parser.add_argument('--no_rms', action='store_false')
     parser.add_argument('--num_expert_data', default=4, type=int)
+    parser.add_argument('--warm_start_epoch', default=100, type=int)
     args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()
