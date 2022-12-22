@@ -201,18 +201,18 @@ def main():
                 rollouts.obs[step], rollouts.actions[step], args.gamma,
                 rollouts.masks[step], update_rms=args.no_rms, reward=args.gail_reward)
 
-            # for _ in range(gail_epoch):
-            #     loss, gail_loss, grad_pen_loss, expert_loss, policy_loss, expert_acc, policy_acc = discr.update(gail_train_loader, rollouts,
-            #                  utils.get_vec_normalize(envs)._obfilt, extra_loss=args.gail_loss)
+        for _ in range(gail_epoch):
+            loss, gail_loss, grad_pen_loss, expert_loss, policy_loss, expert_acc, policy_acc = discr.update(gail_train_loader, rollouts,
+                         utils.get_vec_normalize(envs)._obfilt, extra_loss=args.gail_loss)
 
 
 
         rollouts.compute_returns(next_value, args.use_gae, args.gamma,
                                  args.gae_lambda, args.use_proper_time_limits)
 
-        # value_loss, action_loss, dist_entropy = agent.update(rollouts)
-        for i in range(args.ppo_epoch):
-            loss, gail_loss, grad_pen_loss, expert_loss, policy_loss, expert_acc, policy_acc, value_loss, action_loss, dist_entropy = update(discr, agent, gail_train_loader, rollouts, utils.get_vec_normalize(envs)._obfilt, extra_loss=args.gail_loss)
+        value_loss, action_loss, dist_entropy = agent.update(rollouts)
+        # for i in range(args.ppo_epoch):
+        #     loss, gail_loss, grad_pen_loss, expert_loss, policy_loss, expert_acc, policy_acc, value_loss, action_loss, dist_entropy = update(discr, agent, gail_train_loader, rollouts, utils.get_vec_normalize(envs)._obfilt, extra_loss=args.gail_loss)
         vis.line(X=[total_num_steps], Y=[loss], win='loss', update='append',
                  opts={"xlabel": 'steps', 'ylabel': 'value', 'title': 'loss'})
         vis.line(X=[total_num_steps], Y=[gail_loss], win='gail_loss', update='append',
